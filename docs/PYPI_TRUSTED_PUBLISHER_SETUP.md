@@ -39,22 +39,34 @@ Repeat with name `testpypi` for the TestPyPI dry-run path (required reviewer opt
 
 ## How to release
 
+Publishing requires explicitly creating a GitHub Release — tag push
+alone does NOT trigger publish. This is deliberate; a tag push is too
+easy to fire accidentally.
+
 ```bash
-# 1. Bump version in pyproject.toml
-# 2. Commit
+# 1. Bump version in pyproject.toml, commit, push main
 git commit -am "v0.3.0 release"
+git push origin main
 
-# 3. Tag (no 'sdk-' prefix needed — this repo IS the SDK)
-git tag -a v0.3.0 -m "release notes..."
-
-# 4. Push tag
+# 2. Tag the release commit and push the tag
+git tag -a v0.3.0 -m "release notes"
 git push origin v0.3.0
 ```
 
-The workflow fires on tag push. If the `pypi` environment has
-required reviewers, approve the job in the Actions tab.
+Then on GitHub:
+
+1. Go to https://github.com/yantrikos/yantrikdb-client/releases/new
+2. Choose the tag `v0.3.0`
+3. Generate release notes (button) or write your own
+4. Click **"Publish release"**
+
+The workflow fires on the `release: published` event. Jobs:
+- **build** — wheel + sdist, twine check, upload artifact
+- **publish-pypi** — waits for `pypi` environment approval → publishes via OIDC
+- **attach-artifacts** — uploads wheel + sdist to the Release you just created
 
 ## Dry run via TestPyPI
 
-Actions tab → "Publish to PyPI" → Run workflow → select `testpypi` as
-target. TestPyPI receives the build without touching the real index.
+Actions tab → "Publish to PyPI" → Run workflow → select `testpypi`
+(only option; real PyPI is now release-triggered only). TestPyPI
+receives the build without touching the real index.

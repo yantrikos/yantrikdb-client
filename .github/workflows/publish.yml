@@ -1,21 +1,31 @@
 name: Publish to PyPI
 
-# Triggers on tag push (e.g. v0.3.0) or manual dispatch.
-# Uses PyPI Trusted Publishing (OIDC) — no long-lived tokens.
+# Publishes ONLY when a GitHub Release is explicitly published.
+# Rationale: publishing a release is a deliberate UI click; tag push
+# alone is too easy to fire accidentally (typo, local cleanup, etc.).
+#
+# Release flow:
+#   1. Bump version in pyproject.toml, commit, push to main
+#   2. `git tag -a vX.Y.Z -m "..." && git push origin vX.Y.Z`
+#   3. Go to https://github.com/yantrikos/yantrikdb-client/releases/new
+#      → select tag vX.Y.Z → draft notes → "Publish release"
+#   4. This workflow fires. Approve the `pypi` environment → PyPI upload.
+#      Wheel + sdist are attached to the release automatically.
+#
+# Manual dispatch is kept for TestPyPI dry runs only. Real PyPI
+# publishes require going through the Release UI.
 
 on:
-  push:
-    tags:
-      - 'v*'
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
       target:
-        description: "Target index (pypi or testpypi)"
+        description: "Target index (testpypi only — real PyPI requires a GitHub Release)"
         required: true
-        default: "pypi"
+        default: "testpypi"
         type: choice
         options:
-          - pypi
           - testpypi
 
 jobs:
@@ -56,9 +66,7 @@ jobs:
       url: https://pypi.org/project/yantrikdb-client/
     permissions:
       id-token: write
-    if: >
-      github.event_name == 'push' ||
-      (github.event_name == 'workflow_dispatch' && github.event.inputs.target == 'pypi')
+    if: github.event_name == 'release'
     steps:
       - name: Download artifacts
         uses: actions/download-artifact@v4
@@ -91,28 +99,21 @@ jobs:
         with:
           repository-url: https://test.pypi.org/legacy/
 
-  github-release:
-    name: Create GitHub Release
+  attach-artifacts:
+    name: Attach wheel + sdist to the Release
     needs: build
     runs-on: ubuntu-latest
-    if: github.event_name == 'push'
+    if: github.event_name == 'release'
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
-
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
           name: yantrikdb-client-dist
           path: dist/
 
-      - name: Create Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: dist/*
-          generate_release_notes: true
-          body: |
-            Python SDK release — `pip install yantrikdb-client==${{ github.ref_name }}`
-
-            See `README.md` for usage.
+      - name: Upload to Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${{ github.event.release.tag_name }}" dist/* --clobber --repo "${{ github.repository }}"
