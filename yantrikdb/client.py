@@ -258,9 +258,30 @@ class YantrikClient:
         data = self._get("/v1/personality")
         return data.get("traits", [])
 
-    def conflicts(self) -> list[dict]:
-        """List open conflicts."""
-        data = self._get("/v1/conflicts")
+    def conflicts(
+        self,
+        *,
+        namespace: str | None = None,
+        status: str = "open",
+        limit: int = 100,
+    ) -> list[dict]:
+        """List conflicts, optionally filtered by namespace.
+
+        Args:
+            namespace: if given, only return conflicts whose memories
+                are in this namespace. Prior to v0.2.1 this kwarg did
+                not exist and callers got DB-wide conflicts regardless
+                of scope — see reflect() bugfix in CHANGELOG.
+            status: "open" (default), "resolved", or "all"
+            limit: server-side limit; default 100
+        """
+        params = {"status": status, "limit": str(limit)}
+        if namespace is not None:
+            params["namespace"] = namespace
+        path = "/v1/conflicts"
+        # Build query string manually to respect the existing _get signature
+        from urllib.parse import urlencode
+        data = self._get(f"{path}?{urlencode(params)}")
         return data.get("conflicts", [])
 
     def health(self) -> dict:
@@ -469,7 +490,8 @@ class YantrikClient:
         *,
         namespace: str | None = None,
         top_k_per_type: int = 5,
-        include_conflicts: bool = True,
+        include_conflicts: bool = False,
+        max_conflicts: int = 5,
     ) -> Reflection:
         """Compose a meta-state view by running parallel type-filtered
         recalls against the same question. Returns a structured
@@ -480,6 +502,22 @@ class YantrikClient:
         BELIEVES (rules + hypotheses), WHAT IT'S COMMITTED TO
         (constraints + goals), WHAT STORY IT'S IN (arcs), and WHAT
         JUST HAPPENED (recent signals) — all relevant to `question`.
+
+        Args:
+            question: semantic query threaded through every type-filtered recall
+            namespace: if given, scopes ALL recalls AND the conflicts query
+                (the latter is new in v0.2.1 — prior versions leaked DB-wide
+                conflicts into every reflection regardless of namespace)
+            top_k_per_type: recall depth per memory type
+            include_conflicts: whether to fetch open conflicts. Default
+                CHANGED to False in v0.2.1 (was True in v0.2.0). Most
+                reasoning-context callers don't want a conflict list
+                injected into their LLM prompt; opt in explicitly if you
+                do. When True, conflicts are namespace-scoped and capped
+                at max_conflicts.
+            max_conflicts: when include_conflicts is True, cap the list
+                at this many most-recent conflicts. Prevents dumping
+                hundreds of accumulated conflicts into an LLM prompt.
         """
         def pull(mt: str) -> list[Memory]:
             return self.recall_typed(
@@ -497,7 +535,8 @@ class YantrikClient:
         )
         if include_conflicts:
             try:
-                reflection.open_conflicts = self.conflicts()
+                conflicts = self.conflicts(namespace=namespace, limit=max_conflicts)
+                reflection.open_conflicts = conflicts[:max_conflicts]
             except Exception:
                 reflection.open_conflicts = []
         return reflection

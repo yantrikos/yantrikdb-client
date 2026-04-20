@@ -1,6 +1,6 @@
 [project]
 name = "yantrikdb-client"
-version = "0.2.0"
+version = "0.2.1"
 description = "Python client SDK for YantrikDB — the cognitive memory database"
 readme = "README.md"
 license = "MIT"
