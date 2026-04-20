@@ -15,6 +15,8 @@ dev = ["pytest", "pytest-asyncio"]
 embed = ["sentence-transformers>=2.7"]
 
 [project.urls]
-Homepage = "https://github.com/yantrikos/yantrikdb"
-Repository = "https://github.com/yantrikos/yantrikdb-server"
-Issues = "https://github.com/yantrikos/yantrikdb-server/issues"
+Homepage = "https://github.com/yantrikos/yantrikdb-client"
+Repository = "https://github.com/yantrikos/yantrikdb-client"
+Issues = "https://github.com/yantrikos/yantrikdb-client/issues"
+Server = "https://github.com/yantrikos/yantrikdb-server"
+Engine = "https://github.com/yantrikos/yantrikdb"
