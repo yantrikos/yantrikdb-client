@@ -1,5 +1,65 @@
 # Changelog
 
+## 0.3.0 — 2026-04-21
+
+### New
+- **`[embed-tiny]` extra — model2vec static-embedding backend.** ~30MB,
+  pure numpy, no torch, no onnxruntime. Installs in seconds on Python 3.13,
+  where the `[embed]` (sentence-transformers → fastembed → onnxruntime)
+  path can trigger a 30+ minute source compile because no cp313 wheels
+  exist yet.
+- `_embed()` auto-routes to the right backend by name convention:
+  names starting with `minishlab/` or containing `potion` use model2vec;
+  everything else uses sentence-transformers.
+- Exported constants: `DEFAULT_EMBEDDER` (`"all-MiniLM-L6-v2"`) and
+  `ALT_EMBEDDER_TINY` (`"minishlab/potion-base-8M"`).
+- Friendlier error messages when the required embedder backend isn't
+  installed — they point at both `[embed]` and `[embed-tiny]`.
+
+### Unchanged
+- Default embedder remains `"all-MiniLM-L6-v2"` (384 dim), matching
+  YantrikDB's server-side default HNSW dim. Fresh default client +
+  fresh default server still `just work`.
+
+### Opt-in: model2vec on Python 3.13
+If Python 3.13 makes `[embed]` impractical, use the lightweight path —
+but note it **requires a matching server config**:
+
+```bash
+pip install yantrikdb-client[embed-tiny]
+```
+
+```python
+from yantrikdb import ALT_EMBEDDER_TINY, connect
+client = connect(url, token=..., embedder=ALT_EMBEDDER_TINY)
+```
+
+```toml
+# yantrikdb server config (server-side dim must match client embedder)
+[embedding]
+strategy = "client_only"
+dim = 256   # potion-base-8M outputs 256-dim vectors
+```
+
+Without the matching `dim` setting, `remember()` will fail with a 500
+(HNSW dimension-mismatch panic server-side) on first insert.
+
+### Validation
+End-to-end against a real YantrikDB server with real model2vec embeddings
+on Python 3.13 (no monkey-patching):
+- remember() 6 items, avg 156ms/call
+- recall('auth and passwords') → auth-related fixtures both in top-2
+  (scores 1.20 + 1.06 vs ≤0.55 for unrelated), 2× margin
+- recall_typed(memory_type='episodic') returns only episodic, no contamination
+- reflect() composes rule + constraint correctly
+
+### Why this release
+- YantrikDB plugin went live on Cursor Directory (300k+ devs). Python 3.13
+  is increasingly the default on fresh setups (Debian 13, Ubuntu 24.10+).
+  Giving those users a supported install path — even as an opt-in — matters.
+- The default path (`[embed]` + MiniLM) was deliberately kept intact to
+  avoid surprising existing users with silent dim mismatches.
+
 ## 0.2.1 — 2026-04-20
 
 ### Bugfix

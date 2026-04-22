@@ -19,11 +19,38 @@ from .types import (
 )
 
 
+DEFAULT_EMBEDDER = "all-MiniLM-L6-v2"
+"""Default embedder — sentence-transformers MiniLM (384 dim).
+
+Chosen because it matches YantrikDB's default server-side HNSW index
+dimension (384). Fresh client + fresh server `just work`.
+
+For Python 3.13+ (where sentence-transformers' fastembed/onnxruntime
+dep chain compiles from source), opt into the lightweight static-embedding
+backend:
+
+    pip install yantrikdb-client[embed-tiny]
+    connect(url, token=..., embedder="minishlab/potion-base-8M")
+
+But note: potion-base-8M emits 256-dim vectors, so the server must be
+configured to match:
+
+    [embedding]
+    dim = 256
+
+See README and CHANGELOG for the full opt-in migration steps.
+"""
+
+ALT_EMBEDDER_TINY = "minishlab/potion-base-8M"
+"""Recommended lightweight (model2vec) embedder — pair with [embed-tiny] extra
+and server `dim = 256`. See DEFAULT_EMBEDDER docstring."""
+
+
 def connect(
     url: str = "http://localhost:7438",
     *,
     token: str,
-    embedder: str | None = "all-MiniLM-L6-v2",
+    embedder: str | None = DEFAULT_EMBEDDER,
 ) -> YantrikClient:
     """Connect to a YantrikDB server.
 
@@ -32,10 +59,19 @@ def connect(
             - http://host:port (HTTP gateway, default)
             - yantrik://host:port (wire protocol port — auto-adjusts to HTTP +1)
         token: Authentication token (ydb_...).
-        embedder: Sentence-transformers model name to use for client-side
-            embedding. Default is 'all-MiniLM-L6-v2' (384-dim, fast, CPU-friendly).
-            Pass None to disable auto-embedding — the caller must then
-            provide `embedding=[...]` on every remember()/recall() call.
+        embedder: Embedder model name for client-side embedding. The backend
+            is selected automatically from the name:
+            - sentence-transformers names (default 'all-MiniLM-L6-v2', 384 dim)
+              — requires `yantrikdb-client[embed]`, pulls torch. Matches
+              the default server HNSW dim.
+            - model2vec names (e.g. 'minishlab/potion-base-8M', 256 dim) —
+              requires `yantrikdb-client[embed-tiny]`, pure numpy, py3.13-friendly.
+              The server must be configured with matching `[embedding] dim`.
+            Pass None to disable auto-embedding and supply `embedding=[...]`
+            explicitly on every remember()/recall() call.
+
+            IMPORTANT: client embedder output dim MUST match the server's
+            HNSW dim or remember() will hit a 500 (server panic on insert).
     """
     parsed = urlparse(url)
     if parsed.scheme in ("yantrik", "yantrik+tls"):
@@ -61,22 +97,61 @@ class YantrikClient:
         self._embedder = None  # lazy
 
     def _embed(self, text: str) -> list[float] | None:
-        """Lazily load sentence-transformers and encode. Returns None if
-        auto-embedding is disabled (embedder=None at construction)."""
+        """Lazily load the configured embedder and encode text.
+
+        Backend is routed by embedder-name convention:
+          - names containing 'minishlab/' or 'potion' → model2vec (pure numpy)
+          - anything else → sentence-transformers
+
+        Returns None if auto-embedding is disabled (embedder=None).
+        """
         if self._embedder_name is None:
             return None
         if self._embedder is None:
+            self._embedder = self._load_embedder(self._embedder_name)
+        return self._embedder(text)
+
+    def _load_embedder(self, name: str):
+        """Resolve backend and return a callable(text) -> list[float]."""
+        is_model2vec = name.startswith("minishlab/") or "potion" in name.lower()
+        if is_model2vec:
             try:
-                from sentence_transformers import SentenceTransformer
+                from model2vec import StaticModel
             except ImportError as e:
                 raise RuntimeError(
-                    "Auto-embedding requires `sentence-transformers`. "
-                    "Install it (`pip install sentence-transformers`) or "
-                    "pass `embedder=None` to connect() and supply embeddings manually."
+                    f"Embedder '{name}' requires the model2vec backend.\n"
+                    "Install it with:\n"
+                    "  pip install yantrikdb-client[embed-tiny]\n"
+                    "Or pass embedder=None to connect() and supply embeddings manually."
                 ) from e
-            self._embedder = SentenceTransformer(self._embedder_name)
-        vec = self._embedder.encode(text, convert_to_numpy=True, normalize_embeddings=False)
-        return [float(x) for x in vec.tolist()]
+            model = StaticModel.from_pretrained(name)
+
+            def encode(text: str) -> list[float]:
+                vec = model.encode(text)
+                # Normalize 2D (batch) → 1D single result
+                if hasattr(vec, "ndim") and vec.ndim == 2:
+                    vec = vec[0]
+                return [float(x) for x in vec.tolist()]
+
+            return encode
+
+        try:
+            from sentence_transformers import SentenceTransformer
+        except ImportError as e:
+            raise RuntimeError(
+                f"Embedder '{name}' requires the sentence-transformers backend.\n"
+                "Install options:\n"
+                "  pip install yantrikdb-client[embed-tiny]  (recommended — ~30MB, py3.13-friendly)\n"
+                "  pip install yantrikdb-client[embed]        (sentence-transformers + torch, ~800MB)\n"
+                "Or pass embedder=None to connect() and supply embeddings manually."
+            ) from e
+        model = SentenceTransformer(name)
+
+        def encode(text: str) -> list[float]:
+            vec = model.encode(text, convert_to_numpy=True, normalize_embeddings=False)
+            return [float(x) for x in vec.tolist()]
+
+        return encode
 
     def close(self):
         self._client.close()

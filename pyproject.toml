@@ -1,6 +1,6 @@
 [project]
 name = "yantrikdb-client"
-version = "0.2.1"
+version = "0.3.0"
 description = "Python client SDK for YantrikDB — the cognitive memory database"
 readme = "README.md"
 license = "MIT"
@@ -12,6 +12,11 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest", "pytest-asyncio"]
+# Pure-numpy static embeddings (~30MB, no torch, no onnxruntime).
+# Works on Python 3.13+ — recommended default.
+embed-tiny = ["model2vec>=0.3.0", "numpy>=1.24"]
+# sentence-transformers (pulls torch ~800MB). Higher quality, slower install,
+# requires Python <= 3.12 friendly environments for smooth wheels.
 embed = ["sentence-transformers>=2.7"]
 
 [project.urls]

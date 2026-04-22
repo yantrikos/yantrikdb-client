@@ -7,10 +7,42 @@ handling, and reflection.
 ## Install
 
 ```bash
+# Base (bring your own embeddings)
 pip install yantrikdb-client
-# with client-side auto-embedding
+
+# Default: sentence-transformers MiniLM (384 dim). Matches the default
+# YantrikDB server HNSW dim. Works on Python <= 3.12 smoothly; on Python
+# 3.13 may trigger a long onnxruntime source compile via the fastembed
+# dep chain.
 pip install 'yantrikdb-client[embed]'
+
+# Lightweight: model2vec static embedding (~30MB, pure numpy, no torch,
+# no onnxruntime, installs in seconds on Python 3.13+). Opt-in — the
+# server must be configured with a matching [embedding] dim = 256.
+pip install 'yantrikdb-client[embed-tiny]'
 ```
+
+### Python 3.13 opt-in (model2vec)
+
+If Python 3.13 makes the default `[embed]` install impractical, use the
+lightweight path:
+
+```python
+from yantrikdb import ALT_EMBEDDER_TINY, connect
+client = connect(url, token=..., embedder=ALT_EMBEDDER_TINY)
+```
+
+And on the server:
+
+```toml
+[embedding]
+strategy = "client_only"
+dim = 256   # potion-base-8M outputs 256-dim vectors
+```
+
+**Client embedder output dim MUST match the server's HNSW dim.** Otherwise
+`remember()` will return a 500 on first insert (server panics on
+dimension mismatch — default server dim is 384).
 
 ## Quick start
 
@@ -42,6 +74,14 @@ reflection = client.reflect(
 print(reflection.render())
 ```
 
+## What's in 0.3.0
+
+- **`[embed-tiny]` extra**: model2vec static embedding backend — ~30MB,
+  pure numpy, no torch, no onnxruntime. Works on Python 3.13+. Now the
+  default.
+- Auto-routing: embedder name selects the backend automatically (model2vec
+  for `minishlab/...` and `*potion*` names, sentence-transformers otherwise).
+
 ## What's in 0.2.0
 
 - **Character-substrate primitives**: `remember_self`, `remember_rule`,
@@ -52,8 +92,7 @@ print(reflection.render())
 - **Reflect API**: `reflect(question)` composes parallel type-filtered
   recalls + open conflicts into a `Reflection` with `.render()` for
   LLM prompts
-- **Auto-embedder**: pass `embedder="all-MiniLM-L6-v2"` to `connect()`
-  (or keep default) and the client lazy-loads sentence-transformers
+- **Auto-embedder**: client-side embedding via sentence-transformers.
 
 ## API surface
 

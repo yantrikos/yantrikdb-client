@@ -1,4 +1,4 @@
-from .client import connect, YantrikClient
+from .client import ALT_EMBEDDER_TINY, DEFAULT_EMBEDDER, connect, YantrikClient
 from .types import (
     CHARACTER_TYPES,
     Edge,
@@ -13,6 +13,8 @@ from .types import (
 __all__ = [
     "connect",
     "YantrikClient",
+    "DEFAULT_EMBEDDER",
+    "ALT_EMBEDDER_TINY",
     "CHARACTER_TYPES",
     "Edge",
     "Memory",
