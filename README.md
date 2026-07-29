@@ -72,7 +72,35 @@ reflection = client.reflect(
     "How should I handle this high-stakes single-source claim?",
 )
 print(reflection.render())
+
+# Packs (server v0.14.0+) — inject mounted-pack knowledge into a prompt
+ctx = client.pack_context()
+system_prompt = base_prompt + "\n\n" + ctx.prompt
+if ctx.pending:
+    log.info("packs still reconciling on this node: %s", ctx.pending)
 ```
+
+## Clusters just work
+
+Point the client at **any** node of a clustered YantrikDB. Writes that land on
+a follower are transparently followed to the leader (the token is preserved
+across the hop) and the client sticks to the leader afterward. Transient `503`s
+are retried for read-only calls; writes are never silently re-sent. Catch
+`NotLeaderError` / `TransientError` from `yantrikdb.errors` if you want to
+handle a leadership change yourself.
+
+## What's in 0.4.0
+
+- **Cluster-correct transport**: follows the `not_leader` (307) hint to the
+  leader with the token re-attached, sticks to it, and re-seeds if it dies.
+  Fixes silently-dropped writes against a follower.
+- **`pack_context()` / `pack_context_prompt()`**: fetch mounted-pack
+  constitution + coverage for prompt injection; `pending`/`poisoned` surface
+  un-reconciled packs.
+- **`remember(..., idempotency_key=...)`** for safe single-node retries
+  (raises `IdempotencyConflict` on key reuse with different text).
+- **Read-only retry** of transient `503`s; **typed errors** in
+  `yantrikdb.errors`.
 
 ## What's in 0.3.0
 
@@ -102,9 +130,13 @@ print(reflection.render())
 - `YantrikClient.relate(entity, target, relationship)` — knowledge graph edge
 - `YantrikClient.think(...)` — trigger consolidation / conflict scan
 - `YantrikClient.reflect(question, ...)` — structured meta-state view
+- `YantrikClient.pack_context()` / `pack_context_prompt()` — mounted-pack
+  constitution + coverage for prompt injection (server v0.14.0+)
 - Typed helpers: `remember_self/rule/hypothesis/constraint/goal/arc`,
   `record_signal`, `recall_typed`
 - `YantrikClient.session(...)` — context manager for cognitive sessions
+- Errors: `yantrikdb.errors.{YantrikError, NotLeaderError, TransientError,
+  IdempotencyConflict}`
 
 ## License
 
