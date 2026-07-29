@@ -97,8 +97,9 @@ handle a leadership change yourself.
 - **`pack_context()` / `pack_context_prompt()`**: fetch mounted-pack
   constitution + coverage for prompt injection; `pending`/`poisoned` surface
   un-reconciled packs.
-- **`remember(..., idempotency_key=...)`** for safe single-node retries
-  (raises `IdempotencyConflict` on key reuse with different text).
+- **`remember(..., idempotency_key=...)`** for safe retries on single-node
+  **and** clustered servers (raises `IdempotencyConflict` on key reuse with
+  different text).
 - **Read-only retry** of transient `503`s; **typed errors** in
   `yantrikdb.errors`.
 

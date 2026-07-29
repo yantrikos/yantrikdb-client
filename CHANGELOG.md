@@ -25,9 +25,12 @@ correct** and exposes **packs**. Targets yantrikdb-server ≥ 0.14.0.
   carries into its system prompt. `pending`/`poisoned` digests tell you when a
   node hasn't yet reconciled (or has quarantined) a pack, so you never
   advertise coverage a node can't serve.
-- **`remember(..., idempotency_key=...)`** — pass-through for safe retries.
-  Single-node servers only for now (a cluster leader currently rejects it with
-  a 400). Reusing a key with different text raises `IdempotencyConflict`.
+- **`remember(..., idempotency_key=...)`** — pass-through for safe retries;
+  a repeated store returns the original RID instead of writing twice. Supported
+  on both single-node and YRP-clustered servers (validated live against a
+  cluster — the keyed write replicates through consensus). On a cluster the
+  write must carry an embedding (server-side embedder, or pass `embedding=[...]`).
+  Reusing a key with *different* text raises `IdempotencyConflict`.
 - **Automatic retry of transient `503`s for read-only calls** (GETs + `recall`)
   with bounded exponential backoff. Writes are **never** silently retried —
   re-sending a non-idempotent write is a double-write hazard; it raises so the
@@ -36,10 +39,18 @@ correct** and exposes **packs**. Targets yantrikdb-server ≥ 0.14.0.
   `TransientError`, `IdempotencyConflict`.
 
 ### Tests
-- First test suite in the repo: `tests/` covers leader-follow + stickiness,
-  leaderless/flap handling, the read-only-retry vs. no-write-retry split,
-  sticky-leader failover, `pack_context` parsing, and `idempotency_key`
-  pass-through/conflict — all deterministic via httpx `MockTransport`.
+- First test suite in the repo: `tests/` covers leader-follow + stickiness for
+  **both** the 307 and the 503 `read-only` signals, leaderless/flap handling,
+  the read-only-retry vs. no-write-retry split, sticky-leader failover,
+  `pack_context` parsing, and `idempotency_key` pass-through/conflict — all
+  deterministic via httpx `MockTransport`.
+- **Validated live against the homelab YRP cluster** (`tests/integration_smoke.py`):
+  a write aimed at a *follower* was followed to the leader and confirmed
+  replicated (queried the leader directly), `pack_context` returned, and
+  `idempotency_key` proved idempotent-replay + conflict on the cluster. Live
+  testing caught two wrong assumptions before release — the follower's real
+  signal is a **503** (not only a 307), and `idempotency_key` **is** supported
+  on YRP clusters (not single-node-only).
 
 ### Unchanged
 - Every existing method keeps its signature and return type. Default embedder,

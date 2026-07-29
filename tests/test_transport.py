@@ -38,6 +38,41 @@ def test_write_to_follower_follows_leader_and_sticks():
     assert calls == ["leader"]
 
 
+def test_write_to_follower_503_read_only_follows_leader():
+    """A follower rejects a write with a 503 `read-only: not the leader` that
+    carries leader_addr — the real contract (verified live). The client must
+    follow it to the leader exactly like a 307, not treat it as a dead end."""
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.host)
+        if request.url.host == "follower":
+            return httpx.Response(503, json={
+                "error": "read-only: not the leader (current leader: node 1)",
+                "leader_node_id": 1,
+                "leader_addr": "http://leader:7438",
+                "raft_mode": "yrp",
+            })
+        assert request.headers.get("authorization") == "Bearer ydb_test"
+        return httpx.Response(200, json={"rid": "rid-1"})
+
+    c = mock_client(handler)
+    assert c.remember("hello") == "rid-1"
+    assert calls == ["follower", "leader"]
+    assert c._leader_base == "http://leader:7438"
+
+
+def test_503_without_leader_addr_is_transient():
+    """A 503 with no leader_addr (storage blip / no leader elected) is a real
+    transient — a write is not retried, a read is."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503, json={"error": "storage_failure"})
+
+    c = mock_client(handler)
+    with pytest.raises(TransientError):
+        c.remember("x")
+
+
 def test_leaderless_307_raises_transient():
     """307 with no leader_addr (election in flight) is a transient condition,
     not a hard failure — and a write is never silently retried."""

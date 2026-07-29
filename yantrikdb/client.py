@@ -244,31 +244,34 @@ class YantrikClient:
                     continue
                 raise TransientError(f"cannot reach server: {e}") from e
 
-            if r.status_code == 307:
+            # Two distinct "not the leader" signals both carry the leader's
+            # HTTP base URL in `leader_addr` and are handled identically:
+            #   * 307 not_leader   — the commit path rejected a write on a
+            #     non-leader (a race).
+            #   * 503 read-only    — the pre-commit `check_writable` guard on a
+            #     follower ({error, leader_node_id, leader_addr, raft_mode}).
+            #     This is what a follower returns for a normal write.
+            # A 503 with NO leader_addr is a genuine transient (storage blip,
+            # commit timeout, or an election with no leader yet).
+            if r.status_code in (307, 503):
                 body = self._safe_json(r)
                 leader = body.get("leader_addr")
-                if not leader:
-                    # Election in progress — no leader to point at yet.
-                    raise TransientError(
-                        "no leader elected yet", status=307, body=body
-                    )
-                if hops >= self._MAX_LEADER_HOPS:
-                    raise NotLeaderError(
-                        "leader redirect exceeded hop budget",
-                        leader_addr=leader,
-                        status=307,
-                        body=body,
-                    )
-                base = leader.rstrip("/")
-                self._leader_base = base  # sticky
-                hops += 1
-                continue
-
-            if r.status_code == 503:
-                body = self._safe_json(r)
+                if leader:
+                    if hops >= self._MAX_LEADER_HOPS:
+                        raise NotLeaderError(
+                            "leader redirect exceeded hop budget",
+                            leader_addr=leader,
+                            status=r.status_code,
+                            body=body,
+                        )
+                    base = leader.rstrip("/")
+                    self._leader_base = base  # sticky
+                    hops += 1
+                    continue
+                # No leader to follow — election in flight or a real transient.
                 raise TransientError(
                     body.get("error", "service unavailable"),
-                    status=503,
+                    status=r.status_code,
                     body=body,
                 )
 
@@ -322,10 +325,12 @@ class YantrikClient:
         Args:
             idempotency_key: if set, the server dedupes repeated stores with the
                 same key — a safe retry returns the original RID rather than
-                writing twice. NOTE: single-node servers only; a clustered
-                server currently rejects this with a 400 (see server RFC 029).
-                Reusing a key with *different* text raises
-                :class:`~yantrikdb.errors.IdempotencyConflict`.
+                writing twice. Supported on both single-node and YRP-clustered
+                servers (the keyed write replicates through consensus). On a
+                cluster the write must carry an embedding: if the server has no
+                embedder configured and you pass ``embedder=None``, supply
+                ``embedding=[...]`` explicitly. Reusing a key with *different*
+                text raises :class:`~yantrikdb.errors.IdempotencyConflict`.
         """
         payload: dict[str, Any] = {
             "text": text,

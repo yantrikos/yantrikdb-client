@@ -12,12 +12,22 @@ a missing feature.
 
 ### 1. Writes to a follower are silently dropped (correctness — the reason for this release)
 
-When a write lands on a **follower**, the server replies
-**`307 Temporary Redirect`** with a JSON body
-`{"error":"not_leader","leader_id":N,"leader_addr":"http://host:7438"}`
-(`commit_error_to_app_error`, server `http_gateway.rs`). The `Location` header
-is **not** populated yet (server PR 6.4), so redirect-following relies on the
-body.
+When a write lands on a **follower**, the server tells the client where the
+leader is via one of **two** signals — both carry the leader's HTTP base URL in
+`leader_addr` (from `leader_hint()`), and the client follows both identically:
+
+- **`503 Service Unavailable`** from the pre-commit `check_writable` guard —
+  body `{"error":"read-only: not the leader (current leader: node N)",
+  "leader_node_id":N,"leader_addr":"http://host:7438","raft_mode":…}`. **This is
+  what a follower actually returns for a normal write** (verified live against
+  the homelab cluster — the write is rejected *before* the commit path).
+- **`307 Temporary Redirect`** from the commit path (`commit_error_to_app_error`)
+  — body `{"error":"not_leader","leader_id":N,"leader_addr":"http://host:7438"}`.
+  Fires if a write reaches the commit stage on a non-leader (a race).
+
+The `Location` header is **not** populated yet (server PR 6.4), so following
+relies on the body in both cases. A `503` with **no** `leader_addr` is a genuine
+transient (storage blip, commit timeout, or an election with no leader elected).
 
 The v0.3.0 transport builds `httpx.Client(...)` with `follow_redirects`
 defaulted **off**, and `raise_for_status()` does **not** raise on 3xx. So
@@ -41,9 +51,10 @@ to inject into its system prompt. The SDK exposes nothing.
 
 ### 3. No idempotency key, no transient-retry
 
-The server accepts `idempotency_key` on `/v1/remember` (single-node; it
-**400s in cluster mode** — not yet supported there) and documents "retry on
-503 reusing the op". The client exposes neither and retries nothing.
+The server accepts `idempotency_key` on `/v1/remember` — on both single-node
+**and** YRP clusters (the keyed write rides consensus via
+`remember_with_idempotency_yrp`; validated live). The client exposes neither the
+key nor any retry.
 
 ## Design
 
@@ -55,10 +66,11 @@ Small, surgical, no new deps.
 `addr` config, used verbatim as a base — server `runtime.rs`). So the client
 doesn't reconstruct anything:
 
-- A private `_request(method, path, ...)` funnels every call. On a **307**, it
-  reads `leader_addr` from the body, and **replays the identical request**
-  (method, body, and `Authorization` header — which we re-attach explicitly,
-  sidestepping httpx's cross-host auth-strip) against `leader_addr + path`.
+- A private `_request(method, path, ...)` funnels every call. On a **307** or a
+  **503 that carries `leader_addr`**, it reads that address and **replays the
+  identical request** (method, body, and `Authorization` header — which we
+  re-attach explicitly, sidestepping httpx's cross-host auth-strip) against
+  `leader_addr + path`.
 - **Sticky leader:** on a successful follow, the discovered base becomes the
   client's working base (`self._leader_base`), so subsequent calls go straight
   to the leader — no redirect tax per request. The originally-configured URL is
@@ -84,7 +96,7 @@ as retryable. Retry policy, deliberately conservative:
   writes conflict rows, so re-running it is not idempotent. Silently
   re-POSTing a non-idempotent write is a correctness hazard (double-write). The
   error is raised; the caller retries, optionally with `idempotency_key` for
-  at-least-once safety on single-node servers.
+  at-least-once safety (works single-node and clustered).
 
 This keeps the "no shortcuts on correctness" line: the client never turns one
 memory into two behind the caller's back.
@@ -96,9 +108,11 @@ memory into two behind the caller's back.
   Convenience `pack_context_prompt()` returns just the `context` string (or `""`)
   for direct prompt injection.
 - `remember(..., idempotency_key: str | None = None)` — pass-through. When set,
-  the client adds it to the payload. Documented as **single-node only** for now
-  (mirrors the server's cluster-mode 400); no auto-retry is built on it, so the
-  cluster-mode limitation never becomes a hidden client behavior.
+  the client adds it to the payload. Works on single-node **and** YRP clusters
+  (the server replicates the keyed write through consensus). No client-side
+  auto-retry is built on it — the caller decides when to retry — so behavior
+  stays explicit. On a cluster the keyed write requires an embedding (server-side
+  or client-supplied).
 
 ### Errors
 
