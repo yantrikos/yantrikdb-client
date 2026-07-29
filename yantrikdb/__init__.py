@@ -1,4 +1,16 @@
-from .client import ALT_EMBEDDER_TINY, DEFAULT_EMBEDDER, connect, YantrikClient
+from .client import (
+    ALT_EMBEDDER_TINY,
+    DEFAULT_EMBEDDER,
+    PackContext,
+    connect,
+    YantrikClient,
+)
+from .errors import (
+    IdempotencyConflict,
+    NotLeaderError,
+    TransientError,
+    YantrikError,
+)
 from .types import (
     CHARACTER_TYPES,
     Edge,
@@ -15,6 +27,7 @@ __all__ = [
     "YantrikClient",
     "DEFAULT_EMBEDDER",
     "ALT_EMBEDDER_TINY",
+    "PackContext",
     "CHARACTER_TYPES",
     "Edge",
     "Memory",
@@ -23,4 +36,8 @@ __all__ = [
     "SessionSummary",
     "Stats",
     "ThinkResult",
+    "YantrikError",
+    "NotLeaderError",
+    "TransientError",
+    "IdempotencyConflict",
 ]

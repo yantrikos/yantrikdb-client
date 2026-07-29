@@ -1,5 +1,63 @@
 # Changelog
 
+## 0.4.0 — 2026-07-29
+
+First update since the server's replication era. Makes the client **cluster-
+correct** and exposes **packs**. Targets yantrikdb-server ≥ 0.14.0.
+
+### Fixed (correctness — the reason for this release)
+- **Writes to a cluster follower are no longer silently dropped.** A write
+  that lands on a follower gets a `307 not_leader` whose body carries the
+  leader's HTTP base URL. The old transport (redirects off, `raise_for_status`
+  doesn't fire on 3xx) parsed that redirect body as a success payload and
+  lost the write. The client now **follows the leader hint** — replaying the
+  request against the leader with the `Authorization` header re-attached (httpx
+  strips it on cross-host redirects, so naive `follow_redirects=True` would
+  401) — and **sticks** to the discovered leader so later writes skip the
+  redirect. Bounded to 2 hops; a stale sticky leader that stops answering
+  re-seeds from the configured URL.
+
+### New
+- **`client.pack_context()`** → `PackContext{context, pending, poisoned}`, and
+  **`client.pack_context_prompt()`** for the raw string. Fetches the mounted
+  packs' constitution + coverage (server v0.14.0, `GET /v1/pack-context`,
+  normal tenant token) so an agent can inject what pack knowledge it currently
+  carries into its system prompt. `pending`/`poisoned` digests tell you when a
+  node hasn't yet reconciled (or has quarantined) a pack, so you never
+  advertise coverage a node can't serve.
+- **`remember(..., idempotency_key=...)`** — pass-through for safe retries;
+  a repeated store returns the original RID instead of writing twice. Supported
+  on both single-node and YRP-clustered servers (validated live against a
+  cluster — the keyed write replicates through consensus). On a cluster the
+  write must carry an embedding (server-side embedder, or pass `embedding=[...]`).
+  Reusing a key with *different* text raises `IdempotencyConflict`.
+- **Automatic retry of transient `503`s for read-only calls** (GETs + `recall`)
+  with bounded exponential backoff. Writes are **never** silently retried —
+  re-sending a non-idempotent write is a double-write hazard; it raises so the
+  caller decides.
+- **Typed errors** (`yantrikdb.errors`): `YantrikError` (base), `NotLeaderError`,
+  `TransientError`, `IdempotencyConflict`.
+
+### Tests
+- First test suite in the repo: `tests/` covers leader-follow + stickiness for
+  **both** the 307 and the 503 `read-only` signals, leaderless/flap handling,
+  the read-only-retry vs. no-write-retry split, sticky-leader failover,
+  `pack_context` parsing, and `idempotency_key` pass-through/conflict — all
+  deterministic via httpx `MockTransport`.
+- **Validated live against the homelab YRP cluster** (`tests/integration_smoke.py`):
+  a write aimed at a *follower* was followed to the leader and confirmed
+  replicated (queried the leader directly), `pack_context` returned, and
+  `idempotency_key` proved idempotent-replay + conflict on the cluster. Live
+  testing caught two wrong assumptions before release — the follower's real
+  signal is a **503** (not only a 307), and `idempotency_key` **is** supported
+  on YRP clusters (not single-node-only).
+
+### Unchanged
+- Every existing method keeps its signature and return type. Default embedder,
+  the `[embed]` / `[embed-tiny]` extras, and the character-substrate helpers
+  are untouched. A single-node deployment sees no behavioral change beyond the
+  new methods.
+
 ## 0.3.0 — 2026-04-21
 
 ### New

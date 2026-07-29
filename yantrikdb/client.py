@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import time
 from contextlib import contextmanager
+from dataclasses import dataclass
 from typing import Any, Optional
 from urllib.parse import urlparse
 
 import httpx
 
+from .errors import IdempotencyConflict, NotLeaderError, TransientError
 from .types import (
     Edge,
     Memory,
@@ -44,6 +47,29 @@ See README and CHANGELOG for the full opt-in migration steps.
 ALT_EMBEDDER_TINY = "minishlab/potion-base-8M"
 """Recommended lightweight (model2vec) embedder — pair with [embed-tiny] extra
 and server `dim = 256`. See DEFAULT_EMBEDDER docstring."""
+
+
+@dataclass
+class PackContext:
+    """The mounted packs' shared context for the caller's tenant.
+
+    Returned by :meth:`YantrikClient.pack_context`. ``context`` is the packs'
+    combined constitution + coverage block — inject it into an agent's system
+    prompt so the model knows what knowledge it currently carries. ``pending``
+    and ``poisoned`` are digests of packs the manifest says should be mounted
+    but that this node has not yet reconciled (fetching/mounting) or has
+    quarantined (a bad pack) — surfaced so an agent never assumes coverage it
+    can't actually serve.
+    """
+
+    context: str | None
+    pending: list[str]
+    poisoned: list[str]
+
+    @property
+    def prompt(self) -> str:
+        """The context string ready for prompt injection (empty if none)."""
+        return self.context or ""
 
 
 def connect(
@@ -87,11 +113,24 @@ class YantrikClient:
     """Client for YantrikDB HTTP gateway."""
 
     def __init__(self, base_url: str, token: str, *, embedder: str | None = None):
-        self._base = base_url
+        # The URL the caller configured. Retained as the fallback seed if a
+        # discovered leader later becomes unreachable.
+        self._seed_base = base_url.rstrip("/")
+        self._base = self._seed_base
+        # The node we currently believe is the leader. Updated on every 307
+        # `not_leader` redirect so subsequent writes go straight there (sticky
+        # leader) instead of paying the redirect tax each call.
+        self._leader_base = self._seed_base
+        self._token = token
+        self._auth = {"Authorization": f"Bearer {token}"}
+        # follow_redirects stays OFF: the cluster's 307 carries the leader in
+        # the *body* (no Location header yet), and httpx would strip our
+        # Authorization header on a cross-host redirect. We follow deliberately
+        # in `_send_following_leader`, re-attaching the token every hop.
         self._client = httpx.Client(
-            base_url=base_url,
-            headers={"Authorization": f"Bearer {token}"},
+            headers=self._auth,
             timeout=30.0,
+            follow_redirects=False,
         )
         self._embedder_name = embedder
         self._embedder = None  # lazy
@@ -162,20 +201,105 @@ class YantrikClient:
     def __exit__(self, *args):
         self.close()
 
-    def _post(self, path: str, json: dict) -> dict:
-        r = self._client.post(path, json=json)
-        r.raise_for_status()
-        return r.json()
+    # ── Transport (leader-following, retrying) ────────────
+    #
+    # Every call funnels through `_request`. Two concerns are handled here so
+    # no endpoint method has to:
+    #   1. Leader redirects (307 not_leader) — follow to the leader carried in
+    #      the body, re-attaching the token, and stick to it (see __init__).
+    #   2. Transient 503s — retried for read-only calls only. A non-idempotent
+    #      write is NEVER silently re-sent (that would double-write); it raises
+    #      and the caller decides.
+
+    _MAX_LEADER_HOPS = 2
+    _MAX_RETRIES = 3
+    _RETRY_BASE = 0.2  # seconds; exponential
+
+    @staticmethod
+    def _safe_json(r: httpx.Response) -> dict:
+        try:
+            body = r.json()
+            return body if isinstance(body, dict) else {}
+        except Exception:
+            return {}
+
+    def _send_following_leader(self, method: str, path: str, json: dict | None) -> dict:
+        """Send one logical request, following `not_leader` redirects.
+
+        The 307 body carries `leader_addr` as a full HTTP base URL. We swap to
+        it, remember it (sticky), and replay the identical request there.
+        """
+        hops = 0
+        base = self._leader_base
+        while True:
+            url = base.rstrip("/") + path
+            try:
+                r = self._client.request(method, url, json=json, headers=self._auth)
+            except (httpx.ConnectError, httpx.ConnectTimeout) as e:
+                # A sticky leader that went away: fall back to the configured
+                # seed once and let it redirect us to the new leader.
+                if base != self._seed_base:
+                    base = self._seed_base
+                    self._leader_base = self._seed_base
+                    continue
+                raise TransientError(f"cannot reach server: {e}") from e
+
+            # Two distinct "not the leader" signals both carry the leader's
+            # HTTP base URL in `leader_addr` and are handled identically:
+            #   * 307 not_leader   — the commit path rejected a write on a
+            #     non-leader (a race).
+            #   * 503 read-only    — the pre-commit `check_writable` guard on a
+            #     follower ({error, leader_node_id, leader_addr, raft_mode}).
+            #     This is what a follower returns for a normal write.
+            # A 503 with NO leader_addr is a genuine transient (storage blip,
+            # commit timeout, or an election with no leader yet).
+            if r.status_code in (307, 503):
+                body = self._safe_json(r)
+                leader = body.get("leader_addr")
+                if leader:
+                    if hops >= self._MAX_LEADER_HOPS:
+                        raise NotLeaderError(
+                            "leader redirect exceeded hop budget",
+                            leader_addr=leader,
+                            status=r.status_code,
+                            body=body,
+                        )
+                    base = leader.rstrip("/")
+                    self._leader_base = base  # sticky
+                    hops += 1
+                    continue
+                # No leader to follow — election in flight or a real transient.
+                raise TransientError(
+                    body.get("error", "service unavailable"),
+                    status=r.status_code,
+                    body=body,
+                )
+
+            r.raise_for_status()
+            return r.json()
+
+    def _request(
+        self, method: str, path: str, *, json: dict | None = None, read_only: bool = False
+    ) -> dict:
+        attempt = 0
+        while True:
+            try:
+                return self._send_following_leader(method, path, json)
+            except TransientError:
+                if read_only and attempt < self._MAX_RETRIES:
+                    time.sleep(self._RETRY_BASE * (2 ** attempt))
+                    attempt += 1
+                    continue
+                raise
+
+    def _post(self, path: str, json: dict, *, read_only: bool = False) -> dict:
+        return self._request("POST", path, json=json, read_only=read_only)
 
     def _get(self, path: str) -> dict:
-        r = self._client.get(path)
-        r.raise_for_status()
-        return r.json()
+        return self._request("GET", path, read_only=True)
 
     def _delete(self, path: str, json: dict | None = None) -> dict:
-        r = self._client.request("DELETE", path, json=json)
-        r.raise_for_status()
-        return r.json()
+        return self._request("DELETE", path, json=json)
 
     # ── Memory ────────────────────────────────────────────
 
@@ -194,8 +318,20 @@ class YantrikClient:
         certainty: float = 1.0,
         emotional_state: str | None = None,
         embedding: list[float] | None = None,
+        idempotency_key: str | None = None,
     ) -> str:
-        """Store a memory. Returns the memory RID."""
+        """Store a memory. Returns the memory RID.
+
+        Args:
+            idempotency_key: if set, the server dedupes repeated stores with the
+                same key — a safe retry returns the original RID rather than
+                writing twice. Supported on both single-node and YRP-clustered
+                servers (the keyed write replicates through consensus). On a
+                cluster the write must carry an embedding: if the server has no
+                embedder configured and you pass ``embedder=None``, supply
+                ``embedding=[...]`` explicitly. Reusing a key with *different*
+                text raises :class:`~yantrikdb.errors.IdempotencyConflict`.
+        """
         payload: dict[str, Any] = {
             "text": text,
             "importance": importance,
@@ -210,12 +346,20 @@ class YantrikClient:
         }
         if emotional_state:
             payload["emotional_state"] = emotional_state
+        if idempotency_key is not None:
+            payload["idempotency_key"] = idempotency_key
         if embedding is None:
             embedding = self._embed(text)
         if embedding:
             payload["embedding"] = embedding
 
         data = self._post("/v1/remember", payload)
+        if data.get("idempotency_conflict"):
+            raise IdempotencyConflict(
+                f"idempotency_key {idempotency_key!r} was reused with different content",
+                status=200,
+                body=data,
+            )
         return data["rid"]
 
     def recall(
@@ -251,7 +395,7 @@ class YantrikClient:
         if emb is not None:
             payload["query_embedding"] = emb
 
-        data = self._post("/v1/recall", payload)
+        data = self._post("/v1/recall", payload, read_only=True)
         results = [Memory(**r) for r in data["results"]]
         return RecallResult(results=results, total=data["total"])
 
@@ -362,6 +506,29 @@ class YantrikClient:
     def health(self) -> dict:
         """Check server health."""
         return self._get("/v1/health")
+
+    # ── Packs ─────────────────────────────────────────────
+
+    def pack_context(self) -> PackContext:
+        """Fetch the mounted packs' constitution + coverage for this tenant.
+
+        An agent injects :attr:`PackContext.prompt` into its system prompt so
+        the model knows what pack knowledge it currently carries. Uses the
+        normal tenant token (same auth as recall/remember). Packs whose mount
+        hasn't reconciled on this node yet appear in ``pending``; quarantined
+        ones in ``poisoned`` — so you never advertise coverage a node can't
+        actually serve.
+        """
+        data = self._get("/v1/pack-context")
+        return PackContext(
+            context=data.get("pack_context"),
+            pending=data.get("packs_pending") or [],
+            poisoned=data.get("packs_poisoned") or [],
+        )
+
+    def pack_context_prompt(self) -> str:
+        """Convenience: just the pack-context string for prompt injection."""
+        return self.pack_context().prompt
 
     # ── Character-substrate primitives ────────────────────────
     # Typed helpers over memory_type conventions. Engine storage is
