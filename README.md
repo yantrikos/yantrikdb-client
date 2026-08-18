@@ -1,5 +1,8 @@
 # yantrikdb-client
 
+[![PyPI](https://img.shields.io/pypi/v/yantrikdb-client)](https://pypi.org/project/yantrikdb-client/)
+[![Python](https://img.shields.io/pypi/pyversions/yantrikdb-client)](https://pypi.org/project/yantrikdb-client/)
+
 Python SDK for [YantrikDB](https://github.com/yantrikos/yantrikdb) — a
 cognitive memory database with persistent typed memory, contradiction
 handling, and reflection.
@@ -138,6 +141,19 @@ handle a leadership change yourself.
 - `YantrikClient.session(...)` — context manager for cognitive sessions
 - Errors: `yantrikdb.errors.{YantrikError, NotLeaderError, TransientError,
   IdempotencyConflict}`
+
+## Related projects
+
+- [yantrikdb-server](https://github.com/yantrikos/yantrikdb-server) — the
+  server this client talks to: Rust, self-hosted, HTTP gateway + cluster.
+- [yantrikdb](https://github.com/yantrikos/yantrikdb) — the embeddable engine
+  underneath, if you want memory in-process instead of over HTTP.
+- [yantrikdb-mcp](https://github.com/yantrikos/yantrikdb-mcp) — the same
+  memory as an MCP server for Claude Code, Cursor and Windsurf.
+- [langchain-yantrikdb](https://github.com/spranab/langchain-yantrikdb) — as a
+  LangChain `VectorStore` and `ChatMessageHistory`.
+- [yantrik-memory](https://github.com/yantrikos/yantrik-memory) —
+  framework-agnostic memory layer with traits and bond evolution.
 
 ## License
 
