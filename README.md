@@ -150,7 +150,7 @@ handle a leadership change yourself.
   underneath, if you want memory in-process instead of over HTTP.
 - [yantrikdb-mcp](https://github.com/yantrikos/yantrikdb-mcp) — the same
   memory as an MCP server for Claude Code, Cursor and Windsurf.
-- [langchain-yantrikdb](https://github.com/spranab/langchain-yantrikdb) — as a
+- [langchain-yantrikdb](https://github.com/yantrikos/langchain-yantrikdb) — as a
   LangChain `VectorStore` and `ChatMessageHistory`.
 - [yantrik-memory](https://github.com/yantrikos/yantrik-memory) —
   framework-agnostic memory layer with traits and bond evolution.
