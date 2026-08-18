@@ -1,11 +1,17 @@
 # yantrikdb-client
 
 [![PyPI](https://img.shields.io/pypi/v/yantrikdb-client)](https://pypi.org/project/yantrikdb-client/)
+[![PyPI downloads](https://img.shields.io/pypi/dm/yantrikdb-client)](https://pypi.org/project/yantrikdb-client/)
 [![Python](https://img.shields.io/pypi/pyversions/yantrikdb-client)](https://pypi.org/project/yantrikdb-client/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-Python SDK for [YantrikDB](https://github.com/yantrikos/yantrikdb) — a
-cognitive memory database with persistent typed memory, contradiction
-handling, and reflection.
+Talking to a YantrikDB server over raw HTTP means hand-rolling request bodies,
+retry logic, leader redirects on a cluster, and your own guesses about what
+each response field means.
+
+This is the typed Python SDK for [YantrikDB](https://github.com/yantrikos/yantrikdb) —
+a cognitive memory database with persistent typed memory, contradiction
+handling, and reflection. Recall tells you *why* each result came back.
 
 ## Install
 
